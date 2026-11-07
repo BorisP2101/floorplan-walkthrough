@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Floorplan Walkthrough</title>
+  <meta name="description" content="Prototype: draw and label rooms in 2D, then walk through them in 3D.">
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    { "imports": {
+        "three": "./vendor/three.module.js",
+        "three/addons/": "./vendor/addons/"
+    } }
+  </script>
+</head>
+<body>
+  <header>
+    <h1>Floorplan Walkthrough <span class="tag">prototype</span></h1>
+    <nav class="tabs" role="tablist" aria-label="View">
+      <button role="tab" data-view="plan" aria-selected="true">1 · Plan</button>
+      <button role="tab" data-view="overview" aria-selected="false">2 · 3D model</button>
+      <button role="tab" data-view="walk" aria-selected="false">3 · Walk through</button>
+    </nav>
+    <div class="file">
+      <button id="btn-sample" type="button">Sample house</button>
+      <button id="btn-new" type="button">New</button>
+      <button id="btn-export" type="button">Export</button>
+      <label class="as-button">Import<input id="inp-import" type="file" accept="application/json,.json" hidden></label>
+    </div>
+  </header>
+
+  <main>
+    <section id="stage">
+      <svg id="plan" aria-label="Floor plan editor"></svg>
+      <div id="three" hidden>
+        <div id="labels"></div>
+        <div id="hud" hidden>
+          <div id="hud-room"></div>
+          <canvas id="minimap" width="180" height="180" aria-hidden="true"></canvas>
+        </div>
+        <div id="help" class="help"></div>
+      </div>
+      <div id="plan-help" class="help">Drag on empty space to draw a room · drag a room to move it · drag a corner to resize · edges snap to neighbouring rooms so doors appear automatically.</div>
+    </section>
+
+    <aside id="panel" aria-live="polite"></aside>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

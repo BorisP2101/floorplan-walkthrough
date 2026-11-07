@@ -1,0 +1,6 @@
+{
+  "name": "floorplan-walkthrough",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node test/layout.test.mjs", "start": "python3 -m http.server 8080" }
+}
