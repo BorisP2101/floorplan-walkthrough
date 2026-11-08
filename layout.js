@@ -77,7 +77,7 @@ function centred(a, b, w) {
 export function computeLayout(plan) {
   const H = plan.wallHeight || 2.6;
   const walls = [];
-  const perRoom = Object.fromEntries(plan.rooms.map((r) => [r.id, { doorSides: new Set(), glazing: 0, doors: 0, front: false }]));
+  const perRoom = Object.fromEntries(plan.rooms.map((r) => [r.id, { doorSides: new Set(), windowSides: new Set(), glazing: 0, doors: 0, front: false }]));
   let frontDoor = null;
 
   plan.rooms.forEach((r, i) => {
@@ -123,17 +123,19 @@ export function computeLayout(plan) {
           const o = { ...centred(s.a, s.b, w), bottom: 0.9, top: Math.min(2.1, H - 0.1), kind: "window" };
           wall.openings.push(o);
           perRoom[r.id].glazing += w * (o.top - o.bottom);
+          perRoom[r.id].windowSides.add(e.side);
         } else if ((r.type === "bathroom" || r.type === "utility" || r.type === "kitchen") && len >= 0.9) {
           const o = { ...centred(s.a, s.b, 0.6), bottom: 1.5, top: Math.min(2.1, H - 0.1), kind: "window" };
           wall.openings.push(o);
           perRoom[r.id].glazing += 0.6 * (o.top - o.bottom);
+          perRoom[r.id].windowSides.add(e.side);
         }
         walls.push(wall);
       }
     }
   });
 
-  const furniture = plan.rooms.flatMap((r) => furnish(r, perRoom[r.id].doorSides));
+  const furniture = plan.rooms.flatMap((r) => furnish(r, perRoom[r.id].doorSides, perRoom[r.id].windowSides));
   return { walls, perRoom, frontDoor, furniture, H };
 }
 
@@ -157,7 +159,7 @@ export function checks(plan, layout, r) {
 
 // Furniture as simple boxes, placed against a wall without a door.
 // Each item: { cx, cy, sx, sy, h, elev, color } in plan metres.
-export function furnish(r, doorSides) {
+export function furnish(r, doorSides, windowSides = new Set()) {
   const order = ["N", "E", "S", "W"];
   const free = order.filter((s) => !doorSides.has(s));
   const side = free[0] || "N";
@@ -165,60 +167,63 @@ export function furnish(r, doorSides) {
   const deep = side === "N" || side === "S" ? r.d : r.w;
   const items = [];
   // u: offset from the wall's centre along it; v: distance from wall to item centre.
-  const put = (u, v, w, d, h, color, elev = 0) => {
+  // kind tells the realistic renderer what to draw; the schematic view draws a box.
+  const put = (kind, u, v, w, d, h, color, elev = 0) => {
     if (w <= 0 || d <= 0) return;
     let cx, cy, sx, sy;
     if (side === "N") { cx = r.x + r.w / 2 + u; cy = r.y + v; sx = w; sy = d; }
     if (side === "S") { cx = r.x + r.w / 2 + u; cy = r.y + r.d - v; sx = w; sy = d; }
     if (side === "W") { cx = r.x + v; cy = r.y + r.d / 2 + u; sx = d; sy = w; }
     if (side === "E") { cx = r.x + r.w - v; cy = r.y + r.d / 2 + u; sx = d; sy = w; }
-    items.push({ cx, cy, sx, sy, h, elev, color, room: r.id });
+    items.push({ kind, side, window: windowSides.has(side), cx, cy, sx, sy, h, elev, color, room: r.id });
   };
   const gap = 0.12;
   switch (r.type) {
     case "bedroom": {
       if (along < 2.2 || deep < 2.6) break;
       const bw = Math.min(r.w * r.d > 11 ? 1.8 : 1.4, along - 1.2);
-      put(0, gap + 1.0, bw, 2.0, 0.5, 0xf4f1ea);
-      put(0, gap + 0.05, bw + 0.1, 0.08, 1.05, 0x6b4a32);
-      put(0, gap + 0.35, bw - 0.2, 0.35, 0.62, 0xffffff);
-      if (along > bw + 1.2) { put(-(bw / 2 + 0.3), gap + 0.22, 0.45, 0.4, 0.5, 0x8a6446); put(bw / 2 + 0.3, gap + 0.22, 0.45, 0.4, 0.5, 0x8a6446); }
+      put("bed", 0, gap + 1.0, bw, 2.0, 0.5, 0xf4f1ea);
+      put("headboard", 0, gap + 0.05, bw + 0.1, 0.08, 1.05, 0x6b4a32);
+      put("pillows", 0, gap + 0.35, bw - 0.2, 0.35, 0.62, 0xffffff);
+      if (along > bw + 1.2) { put("sidetable", -(bw / 2 + 0.3), gap + 0.22, 0.45, 0.4, 0.5, 0x8a6446); put("sidetable", bw / 2 + 0.3, gap + 0.22, 0.45, 0.4, 0.5, 0x8a6446); }
       break;
     }
     case "living": {
       if (along < 2.8 || deep < 3) break;
-      put(0, gap + 0.45, Math.min(2.4, along - 1), 0.9, 0.45, 0x5d6b7a);
-      put(0, gap + 0.1, Math.min(2.4, along - 1), 0.2, 0.85, 0x56626f);
-      put(0, gap + 1.6, 1.1, 0.6, 0.42, 0x7a5434);
-      put(0, gap + 1.55, Math.min(2.6, along - 0.6), Math.min(2.0, deep - 1.6), 0.01, 0xd9cdb8);
+      const sw = Math.min(2.4, along - 1);
+      put("sofa", 0, gap + 0.45, sw, 0.9, 0.45, 0x5d6b7a);
+      put("sofaback", 0, gap + 0.1, sw, 0.2, 0.85, 0x56626f);
+      put("coffeetable", 0, gap + 1.6, 1.1, 0.6, 0.42, 0x7a5434);
+      put("rug", 0, gap + 1.55, Math.min(2.6, along - 0.6), Math.min(2.0, deep - 1.6), 0.01, 0xd9cdb8);
+      if (along > 3.6) put("plant", along / 2 - 0.45, 0.45, 0.45, 0.45, 1.2, 0x4f7a3a);
       break;
     }
     case "kitchen": {
-      put(0, 0.3 + gap / 2, along - 0.25, 0.6, 0.9, 0xe8e4dc);
-      put(0, 0.3 + gap / 2, along - 0.25, 0.62, 0.04, 0x3a3a3a, 0.9);
-      if (deep > 3.6 && along > 2.6) put(0, gap + 2.0, Math.min(1.8, along - 1.4), 0.9, 0.92, 0x8b6b4a);
+      put("counter", 0, 0.3 + gap / 2, along - 0.25, 0.6, 0.9, 0xe8e4dc);
+      put("countertop", 0, 0.3 + gap / 2, along - 0.25, 0.62, 0.04, 0x3a3a3a, 0.9);
+      if (deep > 3.6 && along > 2.6) put("island", 0, gap + 2.0, Math.min(1.8, along - 1.4), 0.9, 0.92, 0x8b6b4a);
       break;
     }
     case "utility":
-      put(0, 0.3 + gap / 2, along - 0.25, 0.6, 0.9, 0xdcd8cf);
+      put("counter", 0, 0.3 + gap / 2, along - 0.25, 0.6, 0.9, 0xdcd8cf);
       break;
     case "dining": {
       if (along < 2.4 || deep < 2.6) break;
-      put(0, deep / 2, Math.min(1.8, along - 1.4), 0.9, 0.75, 0x7a5434);
+      put("diningtable", 0, deep / 2, Math.min(1.8, along - 1.4), 0.9, 0.75, 0x7a5434);
       break;
     }
     case "study":
-      if (along >= 1.6) { put(0, gap + 0.35, Math.min(1.4, along - 0.4), 0.7, 0.75, 0x8a6446); put(0, gap + 1.05, 0.5, 0.5, 0.48, 0x333333); }
+      if (along >= 1.6) { put("desk", 0, gap + 0.35, Math.min(1.4, along - 0.4), 0.7, 0.75, 0x8a6446); put("chair", 0, gap + 1.05, 0.5, 0.5, 0.48, 0x333333); }
       break;
     case "bathroom": {
-      if (along >= 1.8) put(along / 2 - 0.9 - 0.02, gap + 0.36, 1.7, 0.72, 0.55, 0xffffff);
-      if (along >= 1.3) put(-(along / 2 - 0.35), gap + 0.3, 0.45, 0.6, 0.42, 0xffffff);
+      if (along >= 1.8) put("bath", along / 2 - 0.9 - 0.02, gap + 0.36, 1.7, 0.72, 0.55, 0xffffff);
+      if (along >= 1.3) put("toilet", -(along / 2 - 0.35), gap + 0.3, 0.45, 0.6, 0.42, 0xffffff);
       break;
     }
     case "patio": {
       if (along >= 2.4 && deep >= 2.2) {
-        put(-along / 4, deep / 2, 1.2, 0.8, 0.74, 0x6e5034);
-        put(along / 2 - 0.6, 0.5, 0.8, 0.5, 0.85, 0x4b4b4b); // braai
+        put("patiotable", -along / 4, deep / 2, 1.2, 0.8, 0.74, 0x6e5034);
+        put("braai", along / 2 - 0.6, 0.5, 0.8, 0.5, 0.85, 0x4b4b4b);
       }
       break;
     }
@@ -247,6 +252,58 @@ export function bounds(plan) {
   const x = Math.min(...plan.rooms.map((r) => r.x)), y = Math.min(...plan.rooms.map((r) => r.y));
   const X = Math.max(...plan.rooms.map((r) => r.x + r.w)), Y = Math.max(...plan.rooms.map((r) => r.y + r.d));
   return { x, y, w: X - x, d: Y - y };
+}
+
+export const FLOOR_MATERIALS = ["oak", "walnut", "pine", "tiles", "terrazzo", "concrete", "slate", "carpet"];
+export const DEFAULT_FLOORS = { living: "oak", dining: "oak", bedroom: "oak", study: "oak", kitchen: "tiles", bathroom: "tiles",
+  utility: "tiles", passage: "oak", entrance: "terrazzo", garage: "concrete", patio: "slate" };
+
+// Checks a plan (e.g. one Claude proposed). Returns { plan, errors, warnings }:
+// the plan is cleaned (numbers rounded to 10 cm, unknown types fixed), errors
+// are problems that break the model, warnings are things worth mentioning.
+export function validatePlan(input) {
+  const errors = [], warnings = [];
+  const plan = { name: String(input?.name || "Concept"), wallHeight: Number(input?.wallHeight) || 2.6, rooms: [], doors: {}, style: {} };
+  plan.wallHeight = Math.min(4, Math.max(2.1, Math.round(plan.wallHeight * 20) / 20));
+  const seen = new Set();
+  for (const [i, r] of (Array.isArray(input?.rooms) ? input.rooms : []).entries()) {
+    const n = (v) => Math.round(Number(v) * 10) / 10;
+    let id = String(r?.id || `r${i + 1}`).replace(/[^\w-]/g, "").slice(0, 32) || `r${i + 1}`;
+    while (seen.has(id)) id += "x";
+    seen.add(id);
+    const room = { id, name: String(r?.name || "Room").slice(0, 40), type: ROOM_TYPES[r?.type] ? r.type : "living", x: n(r?.x), y: n(r?.y), w: n(r?.w), d: n(r?.d) };
+    if (!ROOM_TYPES[r?.type]) warnings.push(`${room.name}: unknown type "${r?.type}", used living room`);
+    if (![room.x, room.y, room.w, room.d].every(Number.isFinite)) { errors.push(`${room.name}: missing position or size`); continue; }
+    if (room.w < 0.8 || room.d < 0.8) { errors.push(`${room.name}: too small (${room.w} × ${room.d} m)`); continue; }
+    if (room.w > 40 || room.d > 40) { errors.push(`${room.name}: too large (${room.w} × ${room.d} m)`); continue; }
+    plan.rooms.push(room);
+  }
+  if (!plan.rooms.length) errors.push("The plan has no rooms");
+  for (let i = 0; i < plan.rooms.length; i++) for (let j = i + 1; j < plan.rooms.length; j++) {
+    const a = plan.rooms[i], b = plan.rooms[j];
+    if (overlaps(a, b)) errors.push(`${a.name} and ${b.name} overlap`);
+  }
+  const ids = new Set(plan.rooms.map((r) => r.id));
+  for (const [k, v] of Object.entries(input?.doors || {})) {
+    const [a, b] = k.split("|");
+    if (ids.has(a) && ids.has(b)) plan.doors[pairKey(a, b)] = !!v;
+  }
+  const st = input?.style || {};
+  if (/^#[0-9a-f]{6}$/i.test(st.walls || "")) plan.style.walls = st.walls;
+  if (st.floors && typeof st.floors === "object") {
+    plan.style.floors = {};
+    for (const [k, v] of Object.entries(st.floors)) if (FLOOR_MATERIALS.includes(v) && (ROOM_TYPES[k] || ids.has(k))) plan.style.floors[k] = v;
+  }
+  if (["warm", "neutral", "cool"].includes(st.light)) plan.style.light = st.light;
+  if (!errors.length) {
+    const lay = computeLayout(plan);
+    for (const r of plan.rooms) {
+      const pr = lay.perRoom[r.id];
+      if (!ROOM_TYPES[r.type].open && pr.doors === 0 && !pr.front) warnings.push(`${r.name} has no door`);
+    }
+    if (!lay.frontDoor) warnings.push("No front door: add an entrance hall on an outside wall");
+  }
+  return { plan, errors, warnings };
 }
 
 // A generic South African 3-bedroom house with stoep, scullery and en-suite.

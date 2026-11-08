@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { applyEnvironment, realisticMaterials, furnitureMesh, FACING } from "./realistic.js";
+import { initChat } from "./chat.js";
 import {
   ROOM_TYPES, area, pairKey, computeLayout, checks, neighbours, roomAt, bounds, overlaps, sampleHouse,
 } from "./layout.js";
@@ -10,6 +12,7 @@ let plan = load() || sampleHouse();
 let layout = computeLayout(plan);
 let selected = null; // room id
 let view = "plan";
+let lookStyle = (() => { try { return localStorage.getItem("fpw-look") || "schematic"; } catch { return "schematic"; } })();
 
 function load() {
   try { const p = JSON.parse(localStorage.getItem(STORE)); return p && Array.isArray(p.rooms) ? p : null; } catch { return null; }
@@ -30,6 +33,32 @@ const el = (tag, attrs = {}, ...kids) => {
   return e;
 };
 
+// ---------- Messages (alert/confirm don't work inside a Claude artifact) ----------
+function toast(text, ms = 3200) {
+  const t = document.getElementById("toast");
+  t.textContent = text; t.hidden = false;
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, ms);
+}
+function askConfirm(text, yesLabel, onYes) {
+  const box = document.getElementById("confirm");
+  box.replaceChildren(el("p", { text }), el("div", { class: "row" },
+    el("button", { type: "button", class: "primary", text: yesLabel, on: { click: () => { box.hidden = true; onYes(); } } }),
+    el("button", { type: "button", text: "Cancel", on: { click: () => { box.hidden = true; } } })));
+  box.hidden = false;
+}
+
+// ---------- Look: schematic or realistic ----------
+const lookButtons = [...document.querySelectorAll(".look button")];
+function setLook(v) {
+  lookStyle = v;
+  try { localStorage.setItem("fpw-look", v); } catch { /* storage unavailable */ }
+  lookButtons.forEach((b) => b.setAttribute("aria-pressed", b.dataset.look === v ? "true" : "false"));
+  dirty3d = true;
+  if (view !== "plan") enter3d(view, { keepCamera: true });
+}
+lookButtons.forEach((b) => b.addEventListener("click", () => setLook(b.dataset.look)));
+lookButtons.forEach((b) => b.setAttribute("aria-pressed", b.dataset.look === lookStyle ? "true" : "false"));
+
 // ---------- Tabs ----------
 const tabs = [...document.querySelectorAll(".tabs button")];
 tabs.forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
@@ -47,12 +76,19 @@ function setView(v, opts = {}) {
 // ---------- File buttons ----------
 document.getElementById("btn-sample").onclick = () => { plan = sampleHouse(); selected = null; fitNext = true; changed(); if (view !== "plan") enter3d(view); };
 document.getElementById("btn-new").onclick = () => {
-  if (plan.rooms.length && !confirm("Start an empty plan? The current plan will be replaced.")) return;
-  plan = { name: "New plan", wallHeight: 2.6, rooms: [], doors: {} }; selected = null; fitNext = true; changed(); setView("plan");
+  const reset = () => { plan = { name: "New plan", wallHeight: 2.6, rooms: [], doors: {} }; selected = null; fitNext = true; changed(); setView("plan"); };
+  if (plan.rooms.length) askConfirm("Start an empty plan? The current plan will be replaced.", "Start empty", reset); else reset();
 };
-document.getElementById("btn-export").onclick = () => {
-  const blob = new Blob([JSON.stringify(plan, null, 2)], { type: "application/json" });
-  const a = el("a", { href: URL.createObjectURL(blob), download: (plan.name || "plan").replace(/[^\w-]+/g, "-").toLowerCase() + ".json" });
+document.getElementById("btn-export").onclick = async () => {
+  const json = JSON.stringify(plan, null, 2);
+  const filename = (plan.name || "plan").replace(/[^\w-]+/g, "-").toLowerCase() + ".json";
+  // Inside a Claude artifact plain download links are blocked; use its downloads capability.
+  const downloads = window.claude?.use ? await window.claude.use("downloads").catch(() => null) : null;
+  if (downloads) {
+    try { await downloads.save({ filename, data: json }); } catch (e) { if (e?.code !== "declined") toast("Export isn't available here."); }
+    return;
+  }
+  const a = el("a", { href: URL.createObjectURL(new Blob([json], { type: "application/json" })), download: filename });
   document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 };
 document.getElementById("inp-import").onchange = async (ev) => {
@@ -64,7 +100,7 @@ document.getElementById("inp-import").onchange = async (ev) => {
     p.rooms = p.rooms.filter((r) => r && r.id && [r.x, r.y, r.w, r.d].every(Number.isFinite));
     p.doors ||= {}; p.wallHeight ||= 2.6;
     plan = p; selected = null; fitNext = true; changed();
-  } catch { alert("That file doesn't look like an exported plan."); }
+  } catch { toast("That file doesn't look like an exported plan."); }
 };
 
 // ---------- 2D plan editor (SVG in metres) ----------
@@ -270,7 +306,7 @@ function roomPanel(r) {
   const set = (k) => (v) => {
     const before = { ...r };
     r[k] = k === "w" || k === "d" ? Math.max(0.8, round2(v)) : round2(v);
-    if (clashes(r)) { Object.assign(r, before); alert("That would overlap another room."); }
+    if (clashes(r)) { Object.assign(r, before); toast("That would overlap another room."); }
     changed();
   };
   const typeSel = el("select", { on: { change: (e) => { r.type = e.target.value; if (!r.name || Object.values(ROOM_TYPES).some((x) => x.label === r.name)) r.name = ROOM_TYPES[r.type].label; changed(); } } },
@@ -317,6 +353,7 @@ let centre = { x: 0, y: 0 };
 const player = { x: 0, z: 0, yaw: 0, pitch: 0 };
 const EYE = 1.62, RADIUS = 0.25;
 
+let ground, hemi, sun;
 function init3d() {
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -325,22 +362,22 @@ function init3d() {
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   host.prepend(renderer.domElement);
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xcfe3f0);
-  scene.fog = new THREE.Fog(0xcfe3f0, 30, 90);
   camera = new THREE.PerspectiveCamera(60, 1, 0.05, 300);
   camera.rotation.order = "YXZ";
   orbit = new OrbitControls(camera, renderer.domElement);
   orbit.enableDamping = true;
   orbit.maxPolarAngle = Math.PI * 0.47;
-  scene.add(new THREE.HemisphereLight(0xffffff, 0xcfc4b0, 1.6));
-  const sun = new THREE.DirectionalLight(0xfff1dc, 2.2);
+  hemi = new THREE.HemisphereLight(0xffffff, 0xcfc4b0, 1.6);
+  scene.add(hemi);
+  sun = new THREE.DirectionalLight(0xfff1dc, 2.2);
   sun.position.set(-12, 22, -9);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   Object.assign(sun.shadow.camera, { left: -20, right: 20, top: 20, bottom: -20, near: 1, far: 70 });
   sun.shadow.bias = -0.0005;
+  sun.shadow.normalBias = 0.02;
   scene.add(sun);
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ color: 0x86a05e, roughness: 1 }));
+  ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ color: 0x86a05e, roughness: 1 }));
   ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true;
   scene.add(ground);
   new ResizeObserver(resize).observe(host);
@@ -359,6 +396,7 @@ function resize() {
 const toW = (x, y) => ({ x: x - centre.x, z: y - centre.y });
 const mats = {};
 const mat = (color, extra = {}) => (mats[color + JSON.stringify(extra)] ||= new THREE.MeshStandardMaterial({ color, roughness: 0.9, ...extra }));
+const schematicGround = new THREE.MeshStandardMaterial({ color: 0x86a05e, roughness: 1 });
 
 function build3d() {
   if (world) { scene.remove(world); world.traverse((o) => o.geometry?.dispose()); }
@@ -366,32 +404,45 @@ function build3d() {
   floorMeshes = []; colliders = [];
   const b = bounds(plan); centre = { x: b.x + b.w / 2, y: b.y + b.d / 2 };
   const H = layout.H;
+  const real = lookStyle === "realistic";
+  const R = real ? realisticMaterials(plan) : null;
+  applyEnvironment(scene, renderer, real);
+  ground.material = real ? R.ground : schematicGround;
+  hemi.intensity = real ? 0.2 : 1.6;
+  sun.intensity = real ? 2.8 : 2.2;
+  sun.color.set(plan.style?.light === "cool" ? 0xf4f7ff : plan.style?.light === "neutral" ? 0xfffaf2 : 0xfff1dc);
 
   for (const r of plan.rooms) {
     const t = ROOM_TYPES[r.type] || ROOM_TYPES.living;
     const c = toW(r.x + r.w / 2, r.y + r.d / 2);
-    const floor = new THREE.Mesh(new THREE.BoxGeometry(r.w, 0.06, r.d), mat(t.floor, { roughness: t.open ? 1 : 0.75 }));
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(r.w, 0.06, r.d), real ? R.floorFor(r, r.w, r.d) : mat(t.floor, { roughness: t.open ? 1 : 0.75 }));
     floor.position.set(c.x, 0.03, c.z); floor.receiveShadow = true; floor.userData.room = r.id;
     world.add(floor); floorMeshes.push(floor);
     if (!t.open) {
-      const ceil = new THREE.Mesh(new THREE.PlaneGeometry(r.w, r.d), mat(0xfbfaf7));
+      const ceil = new THREE.Mesh(new THREE.PlaneGeometry(r.w, r.d), real ? R.ceiling : mat(0xfbfaf7));
       ceil.rotation.x = Math.PI / 2; ceil.position.set(c.x, H, c.z); ceil.castShadow = true;
       ceilings.add(ceil);
-      const lamp = new THREE.PointLight(0xffe9c7, 3.5, 7, 1.2);
+      const warm = plan.style?.light === "cool" ? 0xf2f5ff : 0xffe2b8;
+      const lamp = real ? new THREE.PointLight(warm, 5, 9, 1.6) : new THREE.PointLight(0xffe9c7, 3.5, 7, 1.2);
       lamp.position.set(c.x, H - 0.3, c.z);
       ceilings.add(lamp);
+      if (real) { // a recessed ceiling light you can see
+        const disc = new THREE.Mesh(new THREE.CircleGeometry(0.09, 24), new THREE.MeshBasicMaterial({ color: 0xfff6e6 }));
+        disc.rotation.x = Math.PI / 2; disc.position.set(c.x, H - 0.005, c.z);
+        ceilings.add(disc);
+      }
     }
   }
 
-  const wallMat = mat(0xf2efe8, { roughness: 0.95 });
-  const glassMat = mat(0x9cc7e0, { transparent: true, opacity: 0.28, roughness: 0.1, metalness: 0.1 });
-  const frameMat = mat(0x5a4636);
-  const box = (axis, fixed, a, b2, bottom, top, thick, m, collide) => {
+  const wallMat = real ? R.wall : mat(0xf2efe8, { roughness: 0.95 });
+  const glassMat = real ? R.glass : mat(0x9cc7e0, { transparent: true, opacity: 0.28, roughness: 0.1, metalness: 0.1 });
+  const frameMat = real ? R.frame : mat(0x5a4636);
+  const box = (axis, fixed, a, b2, bottom, top, thick, m, collide, offset = 0) => {
     const L = b2 - a, h = top - bottom;
     if (L <= 0.01 || h <= 0.01) return;
     const geo = axis === "x" ? new THREE.BoxGeometry(L, h, thick) : new THREE.BoxGeometry(thick, h, L);
     const mesh = new THREE.Mesh(geo, m);
-    const p = axis === "x" ? toW((a + b2) / 2, fixed) : toW(fixed, (a + b2) / 2);
+    const p = axis === "x" ? toW((a + b2) / 2, fixed + offset) : toW(fixed + offset, (a + b2) / 2);
     mesh.position.set(p.x, bottom + h / 2, p.z);
     mesh.castShadow = m !== glassMat; mesh.receiveShadow = true;
     world.add(mesh);
@@ -415,6 +466,22 @@ function build3d() {
         box(w.axis, w.fixed, o.b - 0.04, o.b, 0, o.top, w.thick + 0.03, frameMat, false);
         box(w.axis, w.fixed, o.a, o.b, o.top - 0.04, o.top, w.thick + 0.03, frameMat, false);
       }
+      if (real && o.kind === "window") { // window frame, mullion and sill
+        const ft = 0.05, fd = w.thick * 0.5;
+        box(w.axis, w.fixed, o.a, o.a + ft, o.bottom, o.top, fd, frameMat, false);
+        box(w.axis, w.fixed, o.b - ft, o.b, o.bottom, o.top, fd, frameMat, false);
+        box(w.axis, w.fixed, o.a, o.b, o.top - ft, o.top, fd, frameMat, false);
+        box(w.axis, w.fixed, o.a, o.b, o.bottom, o.bottom + ft, fd, frameMat, false);
+        if (o.b - o.a > 1.1) box(w.axis, w.fixed, (o.a + o.b) / 2 - 0.025, (o.a + o.b) / 2 + 0.025, o.bottom, o.top, fd, frameMat, false);
+        box(w.axis, w.fixed, o.a - 0.04, o.b + 0.04, o.bottom - 0.03, o.bottom, w.thick + 0.08, R.sill, false);
+      }
+      if (real && (o.kind === "door" || o.kind === "front")) { // an open door leaf against the wall
+        const len = o.b - o.a - 0.08, hgt = o.top - 0.02;
+        const leaf = new THREE.Mesh(new THREE.BoxGeometry(w.axis === "x" ? 0.04 : len, hgt, w.axis === "x" ? len : 0.04), o.kind === "front" ? mat(0x4a3627, { roughness: 0.5 }) : R.door);
+        const p = w.axis === "x" ? toW(o.a + 0.06, w.fixed + w.thick / 2 + len / 2) : toW(w.fixed + w.thick / 2 + len / 2, o.a + 0.06);
+        leaf.position.set(p.x, hgt / 2 + 0.01, p.z); leaf.castShadow = true; leaf.receiveShadow = true;
+        world.add(leaf);
+      }
       cur = o.b;
     }
     box(w.axis, w.fixed, cur, w.b + ext, 0, H, w.thick, wallMat, true);
@@ -423,10 +490,17 @@ function build3d() {
 
   for (const f of layout.furniture) {
     const p = toW(f.cx, f.cy);
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(f.sx, Math.max(0.01, f.h), f.sy), mat(f.color, { roughness: 0.8 }));
-    mesh.position.set(p.x, f.elev + f.h / 2 + 0.06, p.z);
-    mesh.castShadow = f.h > 0.05; mesh.receiveShadow = true;
-    world.add(mesh);
+    const g = real ? furnitureMesh(f) : null;
+    if (g) {
+      g.position.set(p.x, 0.06, p.z);
+      g.rotation.y = FACING[f.side] || 0;
+      world.add(g);
+    } else {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(f.sx, Math.max(0.01, f.h), f.sy), mat(f.color, { roughness: 0.8 }));
+      mesh.position.set(p.x, f.elev + f.h / 2 + 0.06, p.z);
+      mesh.castShadow = f.h > 0.05; mesh.receiveShadow = true;
+      world.add(mesh);
+    }
     if (f.h > 0.2 && f.elev < 1) colliders.push({ x1: p.x - f.sx / 2, x2: p.x + f.sx / 2, z1: p.z - f.sy / 2, z2: p.z + f.sy / 2 });
   }
   scene.add(world);
@@ -450,6 +524,7 @@ function enter3d(v, opts = {}) {
   hud.hidden = v !== "walk";
   orbit.enabled = v === "overview";
   const b = bounds(plan);
+  if (opts.keepCamera) return; // only the look changed: stay where you are
   if (v === "overview") {
     const span = Math.max(b.w, b.d, 6);
     camera.position.set(span * 0.55, span * 0.95, span * 0.95);
@@ -607,6 +682,13 @@ function drawMinimap() {
   ctx.fillStyle = "#c2602f"; ctx.beginPath(); ctx.moveTo(0, -8); ctx.lineTo(5, 5); ctx.lineTo(-5, 5); ctx.closePath(); ctx.fill();
   ctx.restore();
 }
+
+// ---------- Ideas chat (only inside a Claude artifact) ----------
+initChat({
+  getPlan: () => plan,
+  setPlan: (p) => { plan = p; selected = null; fitNext = true; changed(); if (view !== "plan") enter3d(view, { keepCamera: view === "walk" }); },
+  toast,
+});
 
 // ---------- Start ----------
 addEventListener("resize", () => { if (view === "plan") { fitPlan(); renderPlan(); } });

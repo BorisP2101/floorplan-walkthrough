@@ -21,7 +21,12 @@
       <button role="tab" data-view="overview" aria-selected="false">2 · 3D model</button>
       <button role="tab" data-view="walk" aria-selected="false">3 · Walk through</button>
     </nav>
+    <div class="look" role="group" aria-label="3D look">
+      <button type="button" data-look="schematic" aria-pressed="true">Schematic</button>
+      <button type="button" data-look="realistic" aria-pressed="false">Realistic</button>
+    </div>
     <div class="file">
+      <button id="btn-chat" type="button" class="primary" hidden>✦ Ideas</button>
       <button id="btn-sample" type="button">Sample house</button>
       <button id="btn-new" type="button">New</button>
       <button id="btn-export" type="button">Export</button>
@@ -44,7 +49,30 @@
     </section>
 
     <aside id="panel" aria-live="polite"></aside>
+
+    <aside id="chat" hidden aria-label="Design with Claude">
+      <div class="chat-head">
+        <b>Design with Claude</b>
+        <div class="row">
+          <button id="chat-new" type="button">New chat</button>
+          <button id="chat-close" type="button" aria-label="Close">✕</button>
+        </div>
+      </div>
+      <div id="chat-list" aria-live="polite"></div>
+      <div class="chat-compose">
+        <div id="chat-thumbs" hidden></div>
+        <textarea id="chat-input" rows="3" placeholder="Describe your idea, e.g. 'add a study next to the main bedroom'"></textarea>
+        <div class="row">
+          <button id="chat-attach" type="button" hidden>📎 Photo or sketch</button>
+          <input id="chat-files" type="file" multiple hidden>
+          <button id="chat-send" type="button" class="primary">Send</button>
+        </div>
+      </div>
+    </aside>
   </main>
+
+  <div id="toast" role="status" hidden></div>
+  <div id="confirm" role="alertdialog" hidden></div>
 
   <script type="module" src="app.js"></script>
 </body>
